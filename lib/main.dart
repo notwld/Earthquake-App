@@ -1,12 +1,28 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
+import 'package:path/path.dart';
+import 'package:sqflite/sqflite.dart';
 
-void main() {
-  runApp(EarthquakeApp());
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  final database = await openDatabase(
+    join(await getDatabasesPath(), 'earthquake_database.db'),
+    onCreate: (db, version) {
+      return db.execute(
+        'CREATE TABLE earthquakes(id INTEGER PRIMARY KEY, place TEXT, magnitude REAL, date TEXT, details TEXT, location TEXT, link TEXT)',
+      );
+    },
+    version: 1,
+  );
+  runApp(EarthquakeApp(database: database));
 }
 
 class EarthquakeApp extends StatelessWidget {
+  final Database database;
+
+  const EarthquakeApp({Key? key, required this.database}) : super(key: key);
+
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
@@ -26,18 +42,24 @@ class EarthquakeApp extends StatelessWidget {
           ),
         ),
       ),
-      home: EarthquakeListScreen(),
+      home: EarthquakeListScreen(database: database),
     );
   }
 }
 
 class EarthquakeListScreen extends StatefulWidget {
+  final Database database;
+
+  const EarthquakeListScreen({Key? key, required this.database})
+      : super(key: key);
+
   @override
   _EarthquakeListScreenState createState() => _EarthquakeListScreenState();
 }
 
 class _EarthquakeListScreenState extends State<EarthquakeListScreen> {
   List<Earthquake> earthquakes = [];
+  Earthquake? selectedEarthquake;
 
   Future<void> fetchEarthquakes() async {
     final response = await http.get(Uri.parse(
@@ -52,12 +74,32 @@ class _EarthquakeListScreenState extends State<EarthquakeListScreen> {
             .map<Earthquake>((json) => Earthquake.fromJson(json))
             .toList();
       });
+
+      await saveEarthquakes(); // Save earthquakes to the database
     }
+  }
+
+  Future<void> saveEarthquakes() async {
+    final db = widget.database;
+    await db.delete('earthquakes'); // Clear existing data
+
+    for (final earthquake in earthquakes) {
+      await db.insert('earthquakes', earthquake.toMap());
+    }
+  }
+
+  Future<void> loadSavedEarthquakes() async {
+    final db = widget.database;
+    final data = await db.query('earthquakes');
+    setState(() {
+      earthquakes = data.map((json) => Earthquake.fromMap(json)).toList();
+    });
   }
 
   @override
   void initState() {
     super.initState();
+    loadSavedEarthquakes(); // Load earthquakes from the database
     fetchEarthquakes();
   }
 
@@ -70,28 +112,41 @@ class _EarthquakeListScreenState extends State<EarthquakeListScreen> {
       ),
       body: ListView.builder(
         itemCount: earthquakes.length,
-        itemBuilder: (ctx, index) => ListTile(
-          onTap: () {
-            Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (context) =>
-                    EarthquakeDetailsScreen(earthquake: earthquakes[index]),
-              ),
-            );
-          },
-          leading: Icon(Icons.public, color: Colors.blue),
-          title: Text(
-            earthquakes[index].place,
-            style: Theme.of(context).textTheme.subtitle1,
-          ),
-          subtitle: Text(
-            'Magnitude: ${earthquakes[index].magnitude}',
-            style: TextStyle(
-              color: Colors.grey,
+        itemBuilder: (ctx, index) {
+          final earthquake = earthquakes[index];
+          return ListTile(
+            onTap: () async {
+              final result = await Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) =>
+                      EarthquakeDetailsScreen(earthquake: earthquake),
+                ),
+              );
+              if (result != null && result is Earthquake) {
+                setState(() {
+                  selectedEarthquake = result;
+                });
+              }
+            },
+            leading: Icon(
+              Icons.public,
+              color: selectedEarthquake == earthquake
+                  ? Colors.blue
+                  : Colors.grey,
             ),
-          ),
-        ),
+            title: Text(
+              earthquake.place,
+              style: Theme.of(context).textTheme.subtitle1,
+            ),
+            subtitle: Text(
+              'Magnitude: ${earthquake.magnitude}',
+              style: TextStyle(
+                color: Colors.grey,
+              ),
+            ),
+          );
+        },
       ),
     );
   }
@@ -149,6 +204,13 @@ class EarthquakeDetailsScreen extends StatelessWidget {
                 decoration: TextDecoration.underline,
               ),
             ),
+            SizedBox(height: 16),
+            ElevatedButton(
+              onPressed: () {
+                Navigator.pop(context, earthquake);
+              },
+              child: Text('Go Back'),
+            ),
           ],
         ),
       ),
@@ -181,7 +243,7 @@ class Earthquake {
         DateTime.fromMillisecondsSinceEpoch(properties['time']).toString();
     final details = properties['title'];
     final location = properties['place'];
-    final link = 'www.moredetails .com';
+    final link = 'www.moredetails.com';
 
     return Earthquake(
       place: place,
@@ -190,6 +252,28 @@ class Earthquake {
       details: details,
       location: location,
       link: link,
+    );
+  }
+
+  Map<String, dynamic> toMap() {
+    return {
+      'place': place,
+      'magnitude': magnitude,
+      'date': date,
+      'details': details,
+      'location': location,
+      'link': link,
+    };
+  }
+
+  factory Earthquake.fromMap(Map<String, dynamic> map) {
+    return Earthquake(
+      place: map['place'],
+      magnitude: map['magnitude'],
+      date: map['date'],
+      details: map['details'],
+      location: map['location'],
+      link: map['link'],
     );
   }
 }
